@@ -1,11 +1,9 @@
 # 饮酒记录器
 
-这是一个饮酒记录器项目，包含两个前端：
+这是一个饮酒记录器网页项目。
 
 - `index.html`：GitHub Pages 网页版。
-- `miniapp/`：微信小程序原生版。
-
-多人实时同步和微信身份登录通过 `worker/` 里的 Cloudflare Workers API 完成。小程序版本采用木桌酒单拟物风格，使用 WXSS 渐变、阴影、内阴影、边框、高光和 active 按压状态表现实体质感。
+- `worker/`：Cloudflare Workers API，用于多人实时同步和微信网页授权登录。
 
 ## 使用方式
 
@@ -34,68 +32,6 @@
 
 杯数内部使用 `quarters` 计量，`1 quarter = 0.25 杯`，避免浮点数累积误差。
 
-## 微信小程序版
-
-小程序工程在：
-
-```text
-miniapp/
-```
-
-用微信开发者工具导入 `miniapp` 文件夹即可。导入时使用你的小程序 AppID，或者先把 `miniapp/project.config.json` 里的：
-
-```json
-"appid": "touristappid"
-```
-
-改成你自己的小程序 AppID。
-
-### 小程序登录后端配置
-
-小程序不能把 AppSecret 放在前端，所以需要 Cloudflare Worker 帮它用 `wx.login()` 的 code 换 openid。请在 `worker` 目录设置这些 secret：
-
-```bash
-cd worker
-npx wrangler secret put WECHAT_MINI_APP_ID
-npx wrangler secret put WECHAT_MINI_APP_SECRET
-npx wrangler secret put STATE_SECRET
-npx wrangler secret put IDENTITY_TOKEN_SECRET
-npx wrangler deploy
-```
-
-`WECHAT_MINI_APP_ID` 填小程序 AppID，`WECHAT_MINI_APP_SECRET` 填小程序 AppSecret。`STATE_SECRET` 和 `IDENTITY_TOKEN_SECRET` 用两段不同随机字符串，例如：
-
-```bash
-openssl rand -base64 32
-```
-
-### 小程序服务器域名
-
-进入微信公众平台小程序后台：
-
-```text
-开发管理 → 开发设置 → 服务器域名
-```
-
-添加：
-
-```text
-request 合法域名：https://drink-recorder-api.holenn.workers.dev
-socket 合法域名：wss://drink-recorder-api.holenn.workers.dev
-```
-
-如果微信后台不接受 `workers.dev`，需要给 Worker 绑定自定义域名，然后把 `miniapp/app.js` 的 `apiBase` 改成自定义域名。
-
-### 小程序昵称和头像
-
-小程序不能静默读取用户微信昵称和头像。当前实现使用：
-
-- `wx.login()`：获得可验证身份令牌。
-- `input type="nickname"`：用户主动填写/选择昵称。
-- `button open-type="chooseAvatar"`：用户主动选择头像。
-
-多人同步时，操作记录会带上当前用户保存的昵称。
-
 ## 开启多人同步
 
 前端仍然可以放在 GitHub Pages，后端推荐部署 `worker/` 到 Cloudflare Workers。
@@ -110,7 +46,7 @@ npx wrangler login
 
 ```toml
 [vars]
-ALLOWED_ORIGINS = "https://holenn-sketch.github.io,https://servicewechat.com,http://localhost:8787,http://127.0.0.1:5500"
+ALLOWED_ORIGINS = "https://holenn-sketch.github.io,http://localhost:8787,http://127.0.0.1:5500"
 WECHAT_MODE = "mp"
 ```
 
