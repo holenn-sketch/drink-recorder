@@ -1,4 +1,4 @@
 window.DRINK_CONFIG = {
-  apiBase: '',
+  apiBase: 'https://drink-recorder-api.holenn.workers.dev',
   wechatMode: 'mp'
 };
