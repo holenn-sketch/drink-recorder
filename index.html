@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>饮酒记录器</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="ios-wallpaper" aria-hidden="true">
+    <span class="fluid-cloud cloud-one"></span>
+    <span class="fluid-cloud cloud-two"></span>
+    <span class="fluid-cloud cloud-three"></span>
+    <span class="fluid-cloud cloud-four"></span>
+    <span class="fluid-cloud cloud-five"></span>
+  </div>
+
+  <div class="app-shell">
+    <header class="liquid-header">
+      <div class="header-rivet header-rivet-left"></div>
+      <div class="header-rivet header-rivet-right"></div>
+      <div class="header-copy">
+        <p class="eyebrow">Social Drink Log</p>
+        <h1>饮酒记录器</h1>
+        <p>记录每个人应该喝多少</p>
+      </div>
+      <div class="sync-cluster" aria-label="多人同步状态">
+        <div class="sync-meta">
+          <span class="sync-dot" aria-hidden="true"></span>
+          <span id="syncStatusLabel">本地模式</span>
+        </div>
+        <button id="editProfileButton" class="sync-name-button" type="button">我：访客</button>
+        <span id="syncRoomLabel" class="sync-room">单机本地</span>
+        <button id="copyShareLinkButton" class="sync-copy-button" type="button">复制链接</button>
+      </div>
+    </header>
+
+    <section class="stats-board" aria-label="全局统计">
+      <article class="stat-tile">
+        <span>总人数</span>
+        <strong id="statPeopleCount">0</strong>
+        <em>位</em>
+      </article>
+      <article class="stat-tile stat-tile-amber">
+        <span>总杯数</span>
+        <strong id="statTotalCups">0</strong>
+        <em>杯</em>
+      </article>
+      <article class="stat-tile">
+        <span>最高</span>
+        <strong id="statTopPerson" class="stat-name">暂无</strong>
+        <em id="statTopCups">0 杯</em>
+      </article>
+    </section>
+
+    <section class="control-panel" aria-label="全局操作">
+      <button class="press-button add-button" id="addPersonButton" type="button">
+        <span class="button-symbol">+</span>
+        <span>添加人员</span>
+      </button>
+      <button class="press-button brass-button" id="openQuickPanelButton" type="button">
+        <span class="button-symbol">✦</span>
+        <span>编辑快捷酒量</span>
+      </button>
+      <button class="press-button leather-button" id="resetAllButton" type="button">
+        <span class="button-symbol">↺</span>
+        <span>全部清零</span>
+      </button>
+      <button class="press-button danger-button" id="clearAllButton" type="button">
+        <span class="button-symbol">×</span>
+        <span>清空全部</span>
+      </button>
+      <button class="press-button sort-button" id="sortToggleButton" type="button">
+        <span class="button-symbol">⇅</span>
+        <span id="sortToggleText">排序：添加顺序</span>
+      </button>
+    </section>
+
+    <main class="people-area">
+      <div class="section-heading">
+        <span class="section-pin"></span>
+        <h2>酒单记录</h2>
+      </div>
+      <div id="peopleList" class="people-list"></div>
+    </main>
+
+    <footer class="bottom-safe">
+      <span>本地保存 · 即开即用</span>
+    </footer>
+  </div>
+
+  <div class="drawer-mask is-hidden" id="quickPanel" aria-hidden="true">
+    <section class="quick-drawer" role="dialog" aria-modal="true" aria-labelledby="quickPanelTitle">
+      <div class="drawer-handle" aria-hidden="true"></div>
+      <div class="drawer-title-row">
+        <div>
+          <p class="drawer-eyebrow">Measure Presets</p>
+          <h2 id="quickPanelTitle">快捷酒量</h2>
+        </div>
+        <button class="round-close" id="closeQuickPanelButton" type="button" aria-label="关闭快捷酒量面板">×</button>
+      </div>
+
+      <div class="quick-input-tray">
+        <label for="quickAmountInput">新增杯数</label>
+        <div class="quick-input-row">
+          <input id="quickAmountInput" type="text" inputmode="decimal" placeholder="0.25 / 0.5 / 1.5">
+          <button class="press-button add-button compact-button" id="addQuickAmountButton" type="button">新增</button>
+        </div>
+      </div>
+
+      <ul class="quick-list" id="quickAmountList"></ul>
+
+      <div class="drawer-actions">
+        <button class="press-button leather-button" id="restoreDefaultButton" type="button">恢复默认</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-mask is-hidden" id="inputModal" aria-hidden="true">
+    <section class="paper-modal" role="dialog" aria-modal="true" aria-labelledby="inputModalTitle">
+      <div class="modal-ridge" aria-hidden="true"></div>
+      <h2 id="inputModalTitle">输入</h2>
+      <p id="inputModalSubtitle" class="modal-subtitle"></p>
+      <label id="inputModalLabel" for="modalInput">内容</label>
+      <input id="modalInput" type="text">
+      <p id="inputModalError" class="input-error" aria-live="polite"></p>
+      <div class="modal-actions">
+        <button class="press-button leather-button" id="inputCancelButton" type="button">取消</button>
+        <button class="press-button add-button" id="inputConfirmButton" type="button">确认</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-mask is-hidden" id="confirmModal" aria-hidden="true">
+    <section class="paper-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+      <div class="modal-ridge" aria-hidden="true"></div>
+      <h2 id="confirmModalTitle">确认操作</h2>
+      <p id="confirmModalMessage" class="modal-subtitle"></p>
+      <div class="modal-actions">
+        <button class="press-button leather-button" id="confirmCancelButton" type="button">取消</button>
+        <button class="press-button danger-button" id="confirmOkButton" type="button">确认</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
