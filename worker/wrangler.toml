@@ -4,7 +4,6 @@ compatibility_date = "2024-11-11"
 
 [vars]
 ALLOWED_ORIGINS = "https://holenn-sketch.github.io,http://localhost:8787,http://127.0.0.1:5500"
-WECHAT_MODE = "mp"
 
 [[durable_objects.bindings]]
 name = "ROOMS"

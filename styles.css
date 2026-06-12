@@ -362,8 +362,7 @@ button {
 }
 
 .sync-name-button,
-.sync-copy-button,
-.sync-wechat-button {
+.sync-copy-button {
   min-height: 34px;
   padding: 0 12px;
   border: 1px solid rgba(255, 255, 255, 0.64);
@@ -388,24 +387,8 @@ button {
   white-space: nowrap;
 }
 
-.sync-wechat-button {
-  color: #0f351e;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(255, 255, 255, 0.44)),
-    radial-gradient(circle at 20% 0%, rgba(52, 199, 89, 0.28), transparent 56%);
-}
-
-.sync-wechat-button.is-authorized {
-  color: #073619;
-  border-color: rgba(206, 255, 222, 0.82);
-  background:
-    linear-gradient(145deg, rgba(218, 255, 231, 0.86), rgba(255, 255, 255, 0.48)),
-    radial-gradient(circle at 30% 0%, rgba(52, 199, 89, 0.36), transparent 58%);
-}
-
 .sync-name-button:active,
-.sync-copy-button:active,
-.sync-wechat-button:active {
+.sync-copy-button:active {
   transform: scale(0.96);
   filter: brightness(0.96);
   box-shadow:

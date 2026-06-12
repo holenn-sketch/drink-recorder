@@ -3,8 +3,6 @@ const MAX_ROOM_ID_LENGTH = 48;
 const MAX_NAME_LENGTH = 18;
 const MAX_PEOPLE = 120;
 const MAX_QUARTERS = 4000;
-const STATE_MAX_AGE_SECONDS = 10 * 60;
-const IDENTITY_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
 
 const DEFAULT_QUICK_AMOUNTS = [
   { id: 'default_025', label: '0.25', quarters: 1 },
@@ -20,25 +18,8 @@ export default {
       return corsResponse(new Response(null, { status: 204 }), request, env);
     }
 
-    if (isWechatVerifyRequest(url, env)) {
-      return new Response(env.WECHAT_VERIFY_CONTENT, {
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'no-store'
-        }
-      });
-    }
-
     if (url.pathname === '/api/health') {
       return corsResponse(json({ ok: true, service: 'drink-recorder-api' }), request, env);
-    }
-
-    if (url.pathname === '/api/auth/wechat/login') {
-      return handleWechatLogin(request, env);
-    }
-
-    if (url.pathname === '/api/auth/wechat/callback') {
-      return handleWechatCallback(request, env);
     }
 
     const roomMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/(state|operations|socket)$/);
@@ -115,7 +96,7 @@ export class DrinkRoom {
       return json({ error: 'invalid_json' }, 400);
     }
 
-    const operation = await sanitizeOperation(payload.operation, payload.identityToken, this.env);
+    const operation = sanitizeOperation(payload.operation);
     if (!operation) {
       return json({ error: 'invalid_operation' }, 400);
     }
@@ -162,121 +143,7 @@ export class DrinkRoom {
   }
 }
 
-async function handleWechatLogin(request, env) {
-  const url = new URL(request.url);
-  const appId = env.WECHAT_APP_ID;
-  const stateSecret = env.STATE_SECRET;
-  const requestedMode = (url.searchParams.get('mode') || env.WECHAT_MODE) === 'open' ? 'open' : 'mp';
-  const returnTo = sanitizeReturnTo(url.searchParams.get('returnTo'), env);
-
-  if (!appId || !stateSecret || !returnTo) {
-    return corsResponse(json({ error: 'wechat_login_not_configured' }, 500), request, env);
-  }
-
-  const state = await signPayload({
-    mode: requestedMode,
-    returnTo,
-    nonce: randomId('state'),
-    iat: Math.floor(Date.now() / 1000)
-  }, stateSecret);
-
-  const callbackUrl = `${url.origin}/api/auth/wechat/callback`;
-  const scope = requestedMode === 'open' ? 'snsapi_login' : 'snsapi_userinfo';
-  const authBase = requestedMode === 'open'
-    ? 'https://open.weixin.qq.com/connect/qrconnect'
-    : 'https://open.weixin.qq.com/connect/oauth2/authorize';
-  const target = new URL(authBase);
-  target.searchParams.set('appid', appId);
-  target.searchParams.set('redirect_uri', callbackUrl);
-  target.searchParams.set('response_type', 'code');
-  target.searchParams.set('scope', scope);
-  target.searchParams.set('state', state);
-
-  return Response.redirect(`${target.toString()}#wechat_redirect`, 302);
-}
-
-async function handleWechatCallback(request, env) {
-  const url = new URL(request.url);
-  const code = url.searchParams.get('code');
-  const signedState = url.searchParams.get('state');
-
-  let state;
-  try {
-    state = await verifySignedPayload(signedState, env.STATE_SECRET, STATE_MAX_AGE_SECONDS);
-  } catch (error) {
-    return json({ error: 'invalid_state' }, 400);
-  }
-
-  if (!code || !state || !state.returnTo) {
-    return json({ error: 'invalid_callback' }, 400);
-  }
-
-  try {
-    const wechatProfile = await fetchWechatProfile(code, state.mode, env);
-    const identityToken = await signPayload({
-      provider: 'wechat',
-      sub: wechatProfile.openid,
-      displayName: wechatProfile.displayName,
-      avatarUrl: wechatProfile.avatarUrl,
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + IDENTITY_MAX_AGE_SECONDS
-    }, env.IDENTITY_TOKEN_SECRET || env.STATE_SECRET);
-
-    const profile = {
-      provider: 'wechat',
-      displayName: wechatProfile.displayName,
-      avatarUrl: wechatProfile.avatarUrl,
-      identityToken
-    };
-
-    return Response.redirect(buildHashRedirect(state.returnTo, 'wechat_profile', base64UrlJson(profile)), 302);
-  } catch (error) {
-    return Response.redirect(buildHashRedirect(state.returnTo, 'wechat_error', 'login_failed'), 302);
-  }
-}
-
-async function fetchWechatProfile(code, mode, env) {
-  const appId = env.WECHAT_APP_ID;
-  const appSecret = env.WECHAT_APP_SECRET;
-  if (!appId || !appSecret) {
-    throw new Error('missing_wechat_secret');
-  }
-
-  const tokenUrl = new URL('https://api.weixin.qq.com/sns/oauth2/access_token');
-  tokenUrl.searchParams.set('appid', appId);
-  tokenUrl.searchParams.set('secret', appSecret);
-  tokenUrl.searchParams.set('code', code);
-  tokenUrl.searchParams.set('grant_type', 'authorization_code');
-
-  const tokenResponse = await fetch(tokenUrl.toString(), {
-    headers: { Accept: 'application/json' }
-  });
-  const tokenPayload = await tokenResponse.json();
-  if (!tokenResponse.ok || tokenPayload.errcode || !tokenPayload.access_token || !tokenPayload.openid) {
-    throw new Error('wechat_token_failed');
-  }
-
-  const userInfoUrl = new URL('https://api.weixin.qq.com/sns/userinfo');
-  userInfoUrl.searchParams.set('access_token', tokenPayload.access_token);
-  userInfoUrl.searchParams.set('openid', tokenPayload.openid);
-  userInfoUrl.searchParams.set('lang', 'zh_CN');
-
-  const userInfoResponse = await fetch(userInfoUrl.toString(), {
-    headers: { Accept: 'application/json' }
-  });
-  const userInfo = await userInfoResponse.json();
-  if (!userInfoResponse.ok || userInfo.errcode) {
-    throw new Error(`wechat_userinfo_failed_${mode || 'mp'}`);
-  }
-
-  return {
-    openid: sanitizeText(tokenPayload.openid, 80),
-    displayName: sanitizeText(userInfo.nickname || '微信用户', MAX_NAME_LENGTH),
-    avatarUrl: sanitizeUrl(userInfo.headimgurl || '')
-  };
-}
-
-async function sanitizeOperation(input, identityToken, env) {
+function sanitizeOperation(input) {
   if (!input || typeof input !== 'object') {
     return null;
   }
@@ -286,9 +153,7 @@ async function sanitizeOperation(input, identityToken, env) {
     return null;
   }
 
-  const fallbackActor = sanitizeActor(input.actor);
-  const verifiedActor = await actorFromIdentityToken(identityToken, env, fallbackActor);
-  const actor = verifiedActor || fallbackActor;
+  const actor = sanitizeActor(input.actor);
   const operation = {
     id: sanitizeId(input.id || randomId('op')),
     type,
@@ -299,6 +164,12 @@ async function sanitizeOperation(input, identityToken, env) {
 
   if (input.person) {
     operation.person = normalizePerson(input.person, 0);
+  }
+  if (Array.isArray(input.people)) {
+    operation.people = input.people
+      .map((item, index) => normalizePerson(item, index))
+      .filter(Boolean)
+      .slice(0, MAX_PEOPLE);
   }
   if (input.personId) {
     operation.personId = sanitizeId(input.personId);
@@ -331,32 +202,6 @@ async function sanitizeOperation(input, identityToken, env) {
   return operation;
 }
 
-async function actorFromIdentityToken(identityToken, env, fallbackActor) {
-  if (!identityToken) {
-    return null;
-  }
-
-  try {
-    const payload = await verifySignedPayload(identityToken, env.IDENTITY_TOKEN_SECRET || env.STATE_SECRET, IDENTITY_MAX_AGE_SECONDS);
-    if (!payload || !payload.provider) {
-      return null;
-    }
-
-    if (payload.provider !== 'wechat' || !payload.displayName) {
-      return null;
-    }
-
-    return {
-      clientId: '',
-      name: sanitizeText(payload.displayName, MAX_NAME_LENGTH),
-      avatarUrl: sanitizeUrl(payload.avatarUrl || ''),
-      identityProvider: 'wechat'
-    };
-  } catch (error) {
-    return null;
-  }
-}
-
 function sanitizeActor(input) {
   const actor = input && typeof input === 'object' ? input : {};
   return {
@@ -371,6 +216,12 @@ function applyOperation(room, operation) {
   const next = normalizeRoom(room);
 
   switch (operation.type) {
+    case 'replaceRoom':
+      next.people = Array.isArray(operation.people) ? operation.people.slice(0, MAX_PEOPLE) : [];
+      next.quickAmounts = Array.isArray(operation.quickAmounts) && operation.quickAmounts.length
+        ? operation.quickAmounts.slice(0, 24)
+        : cloneDefaultQuickAmounts();
+      break;
     case 'addPerson':
       if (operation.person && next.people.length < MAX_PEOPLE && !next.people.some((person) => person.id === operation.person.id)) {
         next.people.push(operation.person);
@@ -531,19 +382,6 @@ function sanitizeUrl(input) {
   }
 }
 
-function sanitizeReturnTo(returnTo, env) {
-  try {
-    const target = new URL(returnTo || '');
-    const origin = target.origin;
-    if (!isOriginAllowed(origin, env)) {
-      return '';
-    }
-    return target.toString();
-  } catch (error) {
-    return '';
-  }
-}
-
 function isAllowedOrigin(request, env) {
   const origin = request.headers.get('Origin');
   return !origin || isOriginAllowed(origin, env);
@@ -552,12 +390,6 @@ function isAllowedOrigin(request, env) {
 function isOriginAllowed(origin, env) {
   const allowed = String(env.ALLOWED_ORIGINS || '').split(',').map((item) => item.trim()).filter(Boolean);
   return allowed.includes('*') || allowed.includes(origin);
-}
-
-function isWechatVerifyRequest(url, env) {
-  const filename = String(env.WECHAT_VERIFY_FILENAME || '').trim();
-  const content = String(env.WECHAT_VERIFY_CONTENT || '').trim();
-  return Boolean(filename && content && url.pathname === `/${filename}`);
 }
 
 function corsResponse(response, request, env) {
@@ -585,86 +417,6 @@ function json(payload, status = 200) {
       'Cache-Control': 'no-store'
     }
   });
-}
-
-function buildHashRedirect(returnTo, key, value) {
-  const target = new URL(returnTo);
-  const params = new URLSearchParams(target.hash.replace(/^#/, ''));
-  params.set(key, value);
-  target.hash = params.toString();
-  return target.toString();
-}
-
-async function signPayload(payload, secret) {
-  const body = base64UrlJson(payload);
-  const signature = await hmacSha256(body, secret);
-  return `${body}.${signature}`;
-}
-
-async function verifySignedPayload(token, secret, maxAgeSeconds) {
-  if (!token || !secret || !token.includes('.')) {
-    throw new Error('invalid_token');
-  }
-
-  const [body, signature] = token.split('.');
-  const expected = await hmacSha256(body, secret);
-  if (!timingSafeEqual(signature, expected)) {
-    throw new Error('invalid_signature');
-  }
-
-  const payload = JSON.parse(base64UrlDecodeToString(body));
-  const now = Math.floor(Date.now() / 1000);
-  if (payload.exp && payload.exp < now) {
-    throw new Error('expired_token');
-  }
-  if (payload.iat && now - payload.iat > maxAgeSeconds) {
-    throw new Error('stale_token');
-  }
-  return payload;
-}
-
-async function hmacSha256(message, secret) {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
-  return base64UrlEncode(new Uint8Array(signature));
-}
-
-function timingSafeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) {
-    return false;
-  }
-
-  let diff = 0;
-  for (let index = 0; index < a.length; index += 1) {
-    diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
-  }
-  return diff === 0;
-}
-
-function base64UrlJson(value) {
-  return base64UrlEncode(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-function base64UrlEncode(bytes) {
-  let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function base64UrlDecodeToString(value) {
-  const normalized = String(value).replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-  const binary = atob(padded);
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
 }
 
 function clampInteger(input, min, max) {

@@ -6,8 +6,8 @@ const SYNC_CLIENT_STORAGE_KEY = 'drink_sync_client_id';
 const PROFILE_STORAGE_KEY = 'drink_user_profile';
 const INVALID_AMOUNT_MESSAGE = '请输入 0.25 的整数倍，例如 0.25、0.5、0.75、1';
 const DEFAULT_ROOM_ID = 'party';
-const WECHAT_PROFILE_HASH_KEY = 'wechat_profile';
 const SYNC_RECONNECT_DELAY = 3200;
+const SYNC_POLL_INTERVAL = 4200;
 const MAX_DISPLAY_NAME_LENGTH = 18;
 
 const DEFAULT_QUICK_AMOUNTS = [
@@ -27,20 +27,19 @@ const state = {
     clientId: '',
     roomId: DEFAULT_ROOM_ID,
     apiBase: '',
-    wechatMode: 'mp',
     enabled: false,
     status: 'local',
     revision: 0,
     socket: null,
     reconnectTimer: null,
+    pollTimer: null,
     applyingRemote: false,
     lastActivity: ''
   },
   profile: {
     name: '访客',
     avatarUrl: '',
-    identityProvider: 'guest',
-    identityToken: ''
+    identityProvider: 'guest'
   }
 };
 
@@ -53,10 +52,8 @@ function init() {
   state.sync.clientId = getClientId();
   state.sync.roomId = getRoomId();
   state.sync.apiBase = getSyncEndpoint();
-  state.sync.wechatMode = getWechatMode();
   state.sync.enabled = canUseRealtimeSync();
   state.profile = loadProfile();
-  consumeWechatProfileFromHash();
   state.people = loadPeople();
   state.quickAmounts = loadQuickAmounts();
   bindEvents();
@@ -78,7 +75,6 @@ function cacheElements() {
   elements.syncActivityLabel = document.querySelector('#syncActivityLabel');
   elements.copyShareLinkButton = document.querySelector('#copyShareLinkButton');
   elements.editProfileButton = document.querySelector('#editProfileButton');
-  elements.wechatLoginButton = document.querySelector('#wechatLoginButton');
   elements.footerModeLabel = document.querySelector('#footerModeLabel');
 
   elements.addPersonButton = document.querySelector('#addPersonButton');
@@ -119,7 +115,6 @@ function bindEvents() {
   elements.sortToggleButton.addEventListener('click', toggleSortMode);
   elements.copyShareLinkButton.addEventListener('click', copyShareLink);
   elements.editProfileButton.addEventListener('click', openProfileDialog);
-  elements.wechatLoginButton.addEventListener('click', startWechatLogin);
   elements.addQuickAmountButton.addEventListener('click', addQuickAmountFromInput);
   elements.restoreDefaultButton.addEventListener('click', restoreDefaultQuickAmounts);
 
@@ -161,7 +156,7 @@ function bindEvents() {
   });
 
   window.addEventListener('storage', syncFromStorage);
-  window.addEventListener('beforeunload', closeSyncSocket);
+  window.addEventListener('beforeunload', stopRealtimeSync);
 }
 
 function generateId(prefix) {
@@ -263,12 +258,6 @@ function getSyncEndpoint() {
   }
 }
 
-function getWechatMode() {
-  const config = window.DRINK_CONFIG || {};
-  const mode = String(config.wechatMode || 'mp').trim();
-  return mode === 'open' ? 'open' : 'mp';
-}
-
 function canUseRealtimeSync() {
   return Boolean(state.sync.apiBase);
 }
@@ -279,19 +268,16 @@ function loadProfile() {
     const name = String(parsed.name || '').trim();
     const avatarUrl = String(parsed.avatarUrl || '').trim();
     const identityProvider = String(parsed.identityProvider || 'guest').trim() || 'guest';
-    const identityToken = String(parsed.identityToken || '').trim();
     return {
       name: name || '访客',
       avatarUrl,
-      identityProvider,
-      identityToken
+      identityProvider
     };
   } catch (error) {
     return {
       name: '访客',
       avatarUrl: '',
-      identityProvider: 'guest',
-      identityToken: ''
+      identityProvider: 'guest'
     };
   }
 }
@@ -302,55 +288,6 @@ function saveProfile() {
   } catch (error) {
     showToast('名称保存失败');
   }
-}
-
-function consumeWechatProfileFromHash() {
-  try {
-    const hashText = window.location.hash.replace(/^#/, '');
-    if (!hashText) {
-      return;
-    }
-
-    const params = new URLSearchParams(hashText);
-    const encodedProfile = params.get(WECHAT_PROFILE_HASH_KEY);
-    if (!encodedProfile) {
-      return;
-    }
-
-    const profile = parseBase64Json(encodedProfile);
-    const displayName = String(profile.displayName || '').trim().slice(0, MAX_DISPLAY_NAME_LENGTH);
-    if (!displayName || !profile.identityToken) {
-      showToast('微信身份返回不完整');
-      return;
-    }
-
-    state.profile = {
-      name: displayName,
-      avatarUrl: String(profile.avatarUrl || '').trim(),
-      identityProvider: 'wechat',
-      identityToken: String(profile.identityToken || '').trim()
-    };
-    saveProfile();
-    cleanWechatHashParam(params);
-    showToast('已同步微信名称');
-  } catch (error) {
-    showToast('微信授权结果解析失败');
-  }
-}
-
-function parseBase64Json(encodedValue) {
-  const normalized = String(encodedValue).replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-  const binary = window.atob(padded);
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes));
-}
-
-function cleanWechatHashParam(params) {
-  params.delete(WECHAT_PROFILE_HASH_KEY);
-  const nextHash = params.toString();
-  const cleanUrl = `${window.location.pathname}${window.location.search}${nextHash ? `#${nextHash}` : ''}`;
-  window.history.replaceState(null, document.title, cleanUrl);
 }
 
 function loadQuickAmounts() {
@@ -466,9 +403,7 @@ function renderSyncStatus() {
 
   elements.syncStatusLabel.textContent = statusMap[state.sync.status] || statusMap.local;
   elements.syncRoomLabel.textContent = state.sync.enabled ? `房间：${state.sync.roomId}` : '单机本地';
-  elements.editProfileButton.textContent = `${state.profile.identityProvider === 'wechat' ? '微信' : '我'}：${state.profile.name}`;
-  elements.wechatLoginButton.textContent = state.profile.identityProvider === 'wechat' ? '已授权' : '微信授权';
-  elements.wechatLoginButton.classList.toggle('is-authorized', state.profile.identityProvider === 'wechat');
+  elements.editProfileButton.textContent = `我：${state.profile.name}`;
   elements.copyShareLinkButton.disabled = false;
   elements.footerModeLabel.textContent = state.sync.enabled
     ? '在线同步 · 分享同一个房间链接即可协作'
@@ -764,7 +699,6 @@ function openProfileDialog() {
       state.profile.name = name;
       state.profile.avatarUrl = '';
       state.profile.identityProvider = 'guest';
-      state.profile.identityToken = '';
       saveProfile();
       renderSyncStatus();
       showToast('名称已保存');
@@ -796,8 +730,9 @@ function startRealtimeSync() {
 
   state.sync.status = 'connecting';
   renderSyncStatus();
-  loadRemoteSnapshot();
+  loadRemoteSnapshot({ allowSeed: true });
   connectSyncSocket();
+  startSyncPolling();
 }
 
 function buildApiUrl(path) {
@@ -808,7 +743,10 @@ function buildRoomPath(suffix) {
   return `/api/rooms/${encodeURIComponent(state.sync.roomId)}${suffix}`;
 }
 
-async function loadRemoteSnapshot() {
+async function loadRemoteSnapshot(options = {}) {
+  const localPeople = state.people.map((person) => ({ ...person }));
+  const localQuickAmounts = state.quickAmounts.map((amount) => ({ ...amount }));
+
   try {
     const url = buildApiUrl(`${buildRoomPath('/state')}?clientId=${encodeURIComponent(state.sync.clientId)}`);
     const response = await fetch(url, {
@@ -821,12 +759,19 @@ async function loadRemoteSnapshot() {
     }
 
     const payload = await response.json();
+    if (options.allowSeed && shouldSeedRemoteFromLocal(payload.room, localPeople, localQuickAmounts)) {
+      await seedRemoteFromLocal(localPeople, localQuickAmounts);
+      return;
+    }
+
     applyRemoteSnapshot(payload.room);
     state.sync.status = 'connected';
     renderSyncStatus();
   } catch (error) {
-    state.sync.status = 'offline';
-    renderSyncStatus();
+    if (!options.quiet || state.sync.status !== 'connected') {
+      state.sync.status = 'offline';
+      renderSyncStatus();
+    }
   }
 }
 
@@ -851,6 +796,8 @@ function connectSyncSocket() {
         const payload = JSON.parse(event.data);
         if (payload.type === 'snapshot') {
           applyRemoteSnapshot(payload.room);
+          state.sync.status = 'connected';
+          renderSyncStatus();
         }
       } catch (error) {
         // Ignore malformed messages from stale sockets.
@@ -869,6 +816,7 @@ function connectSyncSocket() {
     socket.addEventListener('error', () => {
       state.sync.status = 'offline';
       renderSyncStatus();
+      scheduleReconnect();
     });
   } catch (error) {
     state.sync.status = 'offline';
@@ -879,11 +827,18 @@ function connectSyncSocket() {
 
 function closeSyncSocket() {
   window.clearTimeout(state.sync.reconnectTimer);
+  state.sync.reconnectTimer = null;
   if (state.sync.socket) {
     const socket = state.sync.socket;
     state.sync.socket = null;
     socket.close();
   }
+}
+
+function stopRealtimeSync() {
+  closeSyncSocket();
+  window.clearInterval(state.sync.pollTimer);
+  state.sync.pollTimer = null;
 }
 
 function scheduleReconnect() {
@@ -895,6 +850,50 @@ function scheduleReconnect() {
     state.sync.reconnectTimer = null;
     startRealtimeSync();
   }, SYNC_RECONNECT_DELAY);
+}
+
+function startSyncPolling() {
+  if (!state.sync.enabled || state.sync.pollTimer) {
+    return;
+  }
+
+  state.sync.pollTimer = window.setInterval(() => {
+    if (isSyncSocketOpen()) {
+      return;
+    }
+    loadRemoteSnapshot({ quiet: true, allowSeed: true });
+  }, SYNC_POLL_INTERVAL);
+}
+
+function isSyncSocketOpen() {
+  return Boolean(state.sync.socket && state.sync.socket.readyState === WebSocket.OPEN);
+}
+
+function shouldSeedRemoteFromLocal(remoteRoom, localPeople, localQuickAmounts) {
+  const remotePeople = remoteRoom && Array.isArray(remoteRoom.people) ? remoteRoom.people : [];
+  const remoteRevision = Number(remoteRoom && remoteRoom.revision);
+  const remoteIsEmpty = remotePeople.length === 0 && (!Number.isFinite(remoteRevision) || remoteRevision === 0);
+  return remoteIsEmpty && (localPeople.length > 0 || hasCustomQuickAmounts(localQuickAmounts));
+}
+
+function hasCustomQuickAmounts(quickAmounts) {
+  if (!Array.isArray(quickAmounts) || quickAmounts.length !== DEFAULT_QUICK_AMOUNTS.length) {
+    return true;
+  }
+
+  return quickAmounts.some((amount, index) => {
+    const defaultAmount = DEFAULT_QUICK_AMOUNTS[index];
+    return amount.id !== defaultAmount.id || amount.quarters !== defaultAmount.quarters;
+  });
+}
+
+async function seedRemoteFromLocal(localPeople, localQuickAmounts) {
+  const operation = createOperation({
+    type: 'replaceRoom',
+    people: localPeople,
+    quickAmounts: localQuickAmounts
+  });
+  await sendOperationToRemote(operation);
 }
 
 function applyRemoteSnapshot(room) {
@@ -924,33 +923,36 @@ async function postOperation(operation) {
   try {
     state.sync.status = 'syncing';
     renderSyncStatus();
-    const response = await fetch(buildApiUrl(buildRoomPath('/operations')), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json'
-      },
-      body: JSON.stringify({
-        clientId: state.sync.clientId,
-        identityToken: state.profile.identityToken,
-        operation
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`operation ${response.status}`);
-    }
-
-    const payload = await response.json();
-    applyRemoteSnapshot(payload.room);
-    state.sync.status = 'connected';
-    renderSyncStatus();
+    await sendOperationToRemote(operation);
   } catch (error) {
     state.sync.status = 'offline';
     renderSyncStatus();
     showToast('已保存在本机，稍后自动重连同步');
     scheduleReconnect();
   }
+}
+
+async function sendOperationToRemote(operation) {
+  const response = await fetch(buildApiUrl(buildRoomPath('/operations')), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify({
+      clientId: state.sync.clientId,
+      operation
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`operation ${response.status}`);
+  }
+
+  const payload = await response.json();
+  applyRemoteSnapshot(payload.room);
+  state.sync.status = 'connected';
+  renderSyncStatus();
 }
 
 function publishOperation(operationPayload) {
@@ -1022,19 +1024,6 @@ function describeOperation(operation) {
     default:
       return `${actorName} 更新了酒单`;
   }
-}
-
-function startWechatLogin() {
-  if (!state.sync.enabled) {
-    showToast('先在 config.js 配置后端地址');
-    return;
-  }
-
-  const returnTo = `${window.location.origin}${window.location.pathname}${window.location.search}`;
-  const loginUrl = new URL(buildApiUrl('/api/auth/wechat/login'));
-  loginUrl.searchParams.set('returnTo', returnTo);
-  loginUrl.searchParams.set('mode', state.sync.wechatMode);
-  window.location.assign(loginUrl.toString());
 }
 
 function openQuickPanel() {
