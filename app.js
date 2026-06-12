@@ -6,6 +6,9 @@ const SYNC_CLIENT_STORAGE_KEY = 'drink_sync_client_id';
 const PROFILE_STORAGE_KEY = 'drink_user_profile';
 const INVALID_AMOUNT_MESSAGE = '请输入 0.25 的整数倍，例如 0.25、0.5、0.75、1';
 const DEFAULT_ROOM_ID = 'party';
+const WECHAT_PROFILE_HASH_KEY = 'wechat_profile';
+const SYNC_RECONNECT_DELAY = 3200;
+const MAX_DISPLAY_NAME_LENGTH = 18;
 
 const DEFAULT_QUICK_AMOUNTS = [
   { id: 'default_025', label: '0.25', quarters: 1 },
@@ -23,14 +26,21 @@ const state = {
   sync: {
     clientId: '',
     roomId: DEFAULT_ROOM_ID,
+    apiBase: '',
+    wechatMode: 'mp',
     enabled: false,
     status: 'local',
     revision: 0,
-    eventSource: null,
-    applyingRemote: false
+    socket: null,
+    reconnectTimer: null,
+    applyingRemote: false,
+    lastActivity: ''
   },
   profile: {
-    name: '访客'
+    name: '访客',
+    avatarUrl: '',
+    identityProvider: 'guest',
+    identityToken: ''
   }
 };
 
@@ -42,8 +52,11 @@ function init() {
   cacheElements();
   state.sync.clientId = getClientId();
   state.sync.roomId = getRoomId();
+  state.sync.apiBase = getSyncEndpoint();
+  state.sync.wechatMode = getWechatMode();
   state.sync.enabled = canUseRealtimeSync();
   state.profile = loadProfile();
+  consumeWechatProfileFromHash();
   state.people = loadPeople();
   state.quickAmounts = loadQuickAmounts();
   bindEvents();
@@ -62,8 +75,11 @@ function cacheElements() {
   elements.syncCluster = document.querySelector('.sync-cluster');
   elements.syncStatusLabel = document.querySelector('#syncStatusLabel');
   elements.syncRoomLabel = document.querySelector('#syncRoomLabel');
+  elements.syncActivityLabel = document.querySelector('#syncActivityLabel');
   elements.copyShareLinkButton = document.querySelector('#copyShareLinkButton');
   elements.editProfileButton = document.querySelector('#editProfileButton');
+  elements.wechatLoginButton = document.querySelector('#wechatLoginButton');
+  elements.footerModeLabel = document.querySelector('#footerModeLabel');
 
   elements.addPersonButton = document.querySelector('#addPersonButton');
   elements.openQuickPanelButton = document.querySelector('#openQuickPanelButton');
@@ -103,6 +119,7 @@ function bindEvents() {
   elements.sortToggleButton.addEventListener('click', toggleSortMode);
   elements.copyShareLinkButton.addEventListener('click', copyShareLink);
   elements.editProfileButton.addEventListener('click', openProfileDialog);
+  elements.wechatLoginButton.addEventListener('click', startWechatLogin);
   elements.addQuickAmountButton.addEventListener('click', addQuickAmountFromInput);
   elements.restoreDefaultButton.addEventListener('click', restoreDefaultQuickAmounts);
 
@@ -144,6 +161,7 @@ function bindEvents() {
   });
 
   window.addEventListener('storage', syncFromStorage);
+  window.addEventListener('beforeunload', closeSyncSocket);
 }
 
 function generateId(prefix) {
@@ -234,17 +252,47 @@ function getRoomId() {
   }
 }
 
+function getSyncEndpoint() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const config = window.DRINK_CONFIG || {};
+    const rawEndpoint = params.get('api') || config.apiBase || window.DRINK_SYNC_ENDPOINT || '';
+    return String(rawEndpoint).trim().replace(/\/+$/, '');
+  } catch (error) {
+    return '';
+  }
+}
+
+function getWechatMode() {
+  const config = window.DRINK_CONFIG || {};
+  const mode = String(config.wechatMode || 'mp').trim();
+  return mode === 'open' ? 'open' : 'mp';
+}
+
 function canUseRealtimeSync() {
-  return Boolean(window.DRINK_SYNC_ENDPOINT);
+  return Boolean(state.sync.apiBase);
 }
 
 function loadProfile() {
   try {
     const parsed = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || '{}');
     const name = String(parsed.name || '').trim();
-    return { name: name || '访客' };
+    const avatarUrl = String(parsed.avatarUrl || '').trim();
+    const identityProvider = String(parsed.identityProvider || 'guest').trim() || 'guest';
+    const identityToken = String(parsed.identityToken || '').trim();
+    return {
+      name: name || '访客',
+      avatarUrl,
+      identityProvider,
+      identityToken
+    };
   } catch (error) {
-    return { name: '访客' };
+    return {
+      name: '访客',
+      avatarUrl: '',
+      identityProvider: 'guest',
+      identityToken: ''
+    };
   }
 }
 
@@ -254,6 +302,55 @@ function saveProfile() {
   } catch (error) {
     showToast('名称保存失败');
   }
+}
+
+function consumeWechatProfileFromHash() {
+  try {
+    const hashText = window.location.hash.replace(/^#/, '');
+    if (!hashText) {
+      return;
+    }
+
+    const params = new URLSearchParams(hashText);
+    const encodedProfile = params.get(WECHAT_PROFILE_HASH_KEY);
+    if (!encodedProfile) {
+      return;
+    }
+
+    const profile = parseBase64Json(encodedProfile);
+    const displayName = String(profile.displayName || '').trim().slice(0, MAX_DISPLAY_NAME_LENGTH);
+    if (!displayName || !profile.identityToken) {
+      showToast('微信身份返回不完整');
+      return;
+    }
+
+    state.profile = {
+      name: displayName,
+      avatarUrl: String(profile.avatarUrl || '').trim(),
+      identityProvider: 'wechat',
+      identityToken: String(profile.identityToken || '').trim()
+    };
+    saveProfile();
+    cleanWechatHashParam(params);
+    showToast('已同步微信名称');
+  } catch (error) {
+    showToast('微信授权结果解析失败');
+  }
+}
+
+function parseBase64Json(encodedValue) {
+  const normalized = String(encodedValue).replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+  const binary = window.atob(padded);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function cleanWechatHashParam(params) {
+  params.delete(WECHAT_PROFILE_HASH_KEY);
+  const nextHash = params.toString();
+  const cleanUrl = `${window.location.pathname}${window.location.search}${nextHash ? `#${nextHash}` : ''}`;
+  window.history.replaceState(null, document.title, cleanUrl);
 }
 
 function loadQuickAmounts() {
@@ -363,14 +460,26 @@ function renderSyncStatus() {
     local: '本地模式',
     connecting: '连接中',
     connected: '已同步',
-    offline: '同步断开'
+    offline: '同步断开',
+    syncing: '同步中'
   };
 
   elements.syncStatusLabel.textContent = statusMap[state.sync.status] || statusMap.local;
   elements.syncRoomLabel.textContent = state.sync.enabled ? `房间：${state.sync.roomId}` : '单机本地';
-  elements.editProfileButton.textContent = `我：${state.profile.name}`;
+  elements.editProfileButton.textContent = `${state.profile.identityProvider === 'wechat' ? '微信' : '我'}：${state.profile.name}`;
+  elements.wechatLoginButton.textContent = state.profile.identityProvider === 'wechat' ? '已授权' : '微信授权';
+  elements.wechatLoginButton.classList.toggle('is-authorized', state.profile.identityProvider === 'wechat');
+  elements.copyShareLinkButton.disabled = false;
+  elements.footerModeLabel.textContent = state.sync.enabled
+    ? '在线同步 · 分享同一个房间链接即可协作'
+    : '本地保存 · 配置后端后开启多人同步';
+  if (elements.syncActivityLabel) {
+    elements.syncActivityLabel.textContent = state.sync.lastActivity
+      ? `最近操作：${state.sync.lastActivity}`
+      : '最近操作：暂无';
+  }
   elements.syncCluster.classList.toggle('is-connecting', state.sync.status === 'connecting');
-  elements.syncCluster.classList.toggle('is-connected', state.sync.status === 'connected');
+  elements.syncCluster.classList.toggle('is-connected', state.sync.status === 'connected' || state.sync.status === 'syncing');
   elements.syncCluster.classList.toggle('is-offline', state.sync.status === 'offline');
 }
 
@@ -545,7 +654,7 @@ function updatePersonQuarters(personId, delta) {
   person.quarters = Math.max(0, person.quarters + delta);
   savePeople();
   render();
-  publishOperation({ type: 'updatePersonQuarters', personId, delta });
+  publishOperation({ type: 'updatePersonQuarters', personId, personName: person.name, delta });
 }
 
 function resetPerson(personId) {
@@ -557,7 +666,7 @@ function resetPerson(personId) {
   person.quarters = 0;
   savePeople();
   render();
-  publishOperation({ type: 'resetPerson', personId });
+  publishOperation({ type: 'resetPerson', personId, personName: person.name });
   showToast('已清零');
 }
 
@@ -578,7 +687,7 @@ function deletePerson(personId) {
       if (state.people.length !== originalLength) {
         savePeople();
         render();
-        publishOperation({ type: 'deletePerson', personId });
+        publishOperation({ type: 'deletePerson', personId, personName: person.name });
         showToast('已删除');
       }
     }
@@ -600,7 +709,7 @@ function resetAllPeople() {
       state.people = state.people.map((person) => ({ ...person, quarters: 0 }));
       savePeople();
       render();
-      publishOperation({ type: 'resetAllPeople' });
+      publishOperation({ type: 'resetAllPeople', count: state.people.length });
       showToast('全部已清零');
     }
   });
@@ -649,10 +758,13 @@ function openProfileDialog() {
       if (!name) {
         return { ok: false, message: '名称不能为空' };
       }
-      return { ok: true, value: name.slice(0, 18) };
+      return { ok: true, value: name.slice(0, MAX_DISPLAY_NAME_LENGTH) };
     },
     onConfirm(name) {
       state.profile.name = name;
+      state.profile.avatarUrl = '';
+      state.profile.identityProvider = 'guest';
+      state.profile.identityToken = '';
       saveProfile();
       renderSyncStatus();
       showToast('名称已保存');
@@ -676,12 +788,253 @@ function copyShareLink() {
 }
 
 function startRealtimeSync() {
-  state.sync.status = state.sync.enabled ? 'offline' : 'local';
+  if (!state.sync.enabled) {
+    state.sync.status = 'local';
+    renderSyncStatus();
+    return;
+  }
+
+  state.sync.status = 'connecting';
+  renderSyncStatus();
+  loadRemoteSnapshot();
+  connectSyncSocket();
+}
+
+function buildApiUrl(path) {
+  return `${state.sync.apiBase}${path}`;
+}
+
+function buildRoomPath(suffix) {
+  return `/api/rooms/${encodeURIComponent(state.sync.roomId)}${suffix}`;
+}
+
+async function loadRemoteSnapshot() {
+  try {
+    const url = buildApiUrl(`${buildRoomPath('/state')}?clientId=${encodeURIComponent(state.sync.clientId)}`);
+    const response = await fetch(url, {
+      headers: {
+        Accept: 'application/json'
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`state ${response.status}`);
+    }
+
+    const payload = await response.json();
+    applyRemoteSnapshot(payload.room);
+    state.sync.status = 'connected';
+    renderSyncStatus();
+  } catch (error) {
+    state.sync.status = 'offline';
+    renderSyncStatus();
+  }
+}
+
+function connectSyncSocket() {
+  closeSyncSocket();
+
+  try {
+    const socketUrl = new URL(buildApiUrl(buildRoomPath('/socket')));
+    socketUrl.protocol = socketUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    socketUrl.searchParams.set('clientId', state.sync.clientId);
+    socketUrl.searchParams.set('actorName', state.profile.name);
+    const socket = new WebSocket(socketUrl.toString());
+    state.sync.socket = socket;
+
+    socket.addEventListener('open', () => {
+      state.sync.status = 'connected';
+      renderSyncStatus();
+    });
+
+    socket.addEventListener('message', (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'snapshot') {
+          applyRemoteSnapshot(payload.room);
+        }
+      } catch (error) {
+        // Ignore malformed messages from stale sockets.
+      }
+    });
+
+    socket.addEventListener('close', () => {
+      if (state.sync.socket === socket) {
+        state.sync.socket = null;
+        state.sync.status = 'offline';
+        renderSyncStatus();
+        scheduleReconnect();
+      }
+    });
+
+    socket.addEventListener('error', () => {
+      state.sync.status = 'offline';
+      renderSyncStatus();
+    });
+  } catch (error) {
+    state.sync.status = 'offline';
+    renderSyncStatus();
+    scheduleReconnect();
+  }
+}
+
+function closeSyncSocket() {
+  window.clearTimeout(state.sync.reconnectTimer);
+  if (state.sync.socket) {
+    const socket = state.sync.socket;
+    state.sync.socket = null;
+    socket.close();
+  }
+}
+
+function scheduleReconnect() {
+  if (!state.sync.enabled || state.sync.reconnectTimer) {
+    return;
+  }
+
+  state.sync.reconnectTimer = window.setTimeout(() => {
+    state.sync.reconnectTimer = null;
+    startRealtimeSync();
+  }, SYNC_RECONNECT_DELAY);
+}
+
+function applyRemoteSnapshot(room) {
+  if (!room || typeof room !== 'object') {
+    return;
+  }
+
+  state.sync.applyingRemote = true;
+  state.people = Array.isArray(room.people)
+    ? room.people.map((item, index) => normalizePerson(item, index)).filter(Boolean)
+    : [];
+  state.quickAmounts = Array.isArray(room.quickAmounts)
+    ? room.quickAmounts.map((item, index) => normalizeQuickAmount(item, index)).filter(Boolean)
+    : cloneDefaultQuickAmounts();
+  if (!state.quickAmounts.length) {
+    state.quickAmounts = cloneDefaultQuickAmounts();
+  }
+  state.sync.revision = Number.isFinite(Number(room.revision)) ? Number(room.revision) : state.sync.revision;
+  state.sync.lastActivity = room.lastActivity ? describeOperation(room.lastActivity) : state.sync.lastActivity;
+  savePeople();
+  saveQuickAmounts();
+  state.sync.applyingRemote = false;
+  render();
+}
+
+async function postOperation(operation) {
+  try {
+    state.sync.status = 'syncing';
+    renderSyncStatus();
+    const response = await fetch(buildApiUrl(buildRoomPath('/operations')), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({
+        clientId: state.sync.clientId,
+        identityToken: state.profile.identityToken,
+        operation
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`operation ${response.status}`);
+    }
+
+    const payload = await response.json();
+    applyRemoteSnapshot(payload.room);
+    state.sync.status = 'connected';
+    renderSyncStatus();
+  } catch (error) {
+    state.sync.status = 'offline';
+    renderSyncStatus();
+    showToast('已保存在本机，稍后自动重连同步');
+    scheduleReconnect();
+  }
+}
+
+function publishOperation(operationPayload) {
+  if (state.sync.applyingRemote) {
+    return;
+  }
+
+  const operation = createOperation(operationPayload);
+  recordActivity(operation);
+
+  if (!state.sync.enabled) {
+    return;
+  }
+
+  postOperation(operation);
+}
+
+function createOperation(payload) {
+  return {
+    ...payload,
+    id: generateId('op'),
+    clientId: state.sync.clientId,
+    actor: getActorSnapshot(),
+    createdAt: Date.now()
+  };
+}
+
+function getActorSnapshot() {
+  return {
+    clientId: state.sync.clientId,
+    name: state.profile.name || '访客',
+    avatarUrl: state.profile.avatarUrl || '',
+    identityProvider: state.profile.identityProvider || 'guest'
+  };
+}
+
+function recordActivity(operation) {
+  state.sync.lastActivity = describeOperation(operation);
   renderSyncStatus();
 }
 
-function publishOperation() {
-  // Realtime publishing is wired when a deployable sync service is selected.
+function describeOperation(operation) {
+  const actorName = operation.actor && operation.actor.name ? operation.actor.name : operation.actorName || '有人';
+  const personName = operation.personName || (operation.person && operation.person.name) || '成员';
+
+  switch (operation.type) {
+    case 'addPerson':
+      return `${actorName} 添加了 ${personName}`;
+    case 'updatePersonQuarters': {
+      const sign = operation.delta >= 0 ? '+' : '-';
+      return `${actorName} 给 ${personName} ${sign}${formatCupsByQuarters(Math.abs(operation.delta || 0))} 杯`;
+    }
+    case 'resetPerson':
+      return `${actorName} 清零了 ${personName}`;
+    case 'deletePerson':
+      return `${actorName} 删除了 ${personName}`;
+    case 'resetAllPeople':
+      return `${actorName} 清零了全部杯数`;
+    case 'clearAllPeople':
+      return `${actorName} 清空了酒单`;
+    case 'addQuickAmount':
+      return `${actorName} 新增了 ${operation.amount ? operation.amount.label : ''} 杯快捷量`;
+    case 'editQuickAmount':
+      return `${actorName} 修改了快捷量为 ${operation.label || formatCupsByQuarters(operation.quarters || 0)} 杯`;
+    case 'deleteQuickAmount':
+      return `${actorName} 删除了 ${operation.label || ''} 杯快捷量`;
+    case 'restoreDefaultQuickAmounts':
+      return `${actorName} 恢复了默认快捷量`;
+    default:
+      return `${actorName} 更新了酒单`;
+  }
+}
+
+function startWechatLogin() {
+  if (!state.sync.enabled) {
+    showToast('先在 config.js 配置后端地址');
+    return;
+  }
+
+  const returnTo = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+  const loginUrl = new URL(buildApiUrl('/api/auth/wechat/login'));
+  loginUrl.searchParams.set('returnTo', returnTo);
+  loginUrl.searchParams.set('mode', state.sync.wechatMode);
+  window.location.assign(loginUrl.toString());
 }
 
 function openQuickPanel() {
@@ -766,7 +1119,7 @@ function editQuickAmount(quickId) {
       target.label = formatCupsByQuarters(quarters);
       saveQuickAmounts();
       render();
-      publishOperation({ type: 'editQuickAmount', quickId, quarters });
+      publishOperation({ type: 'editQuickAmount', quickId, quarters, label: target.label });
       showToast('修改成功');
     }
   });
@@ -794,7 +1147,7 @@ function deleteQuickAmount(quickId) {
       if (state.quickAmounts.length !== originalLength) {
         saveQuickAmounts();
         render();
-        publishOperation({ type: 'deleteQuickAmount', quickId });
+        publishOperation({ type: 'deleteQuickAmount', quickId, label: amount.label });
         showToast('已删除');
       }
     }

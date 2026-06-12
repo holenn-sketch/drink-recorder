@@ -30,6 +30,7 @@
           <span id="syncStatusLabel">本地模式</span>
         </div>
         <button id="editProfileButton" class="sync-name-button" type="button">我：访客</button>
+        <button id="wechatLoginButton" class="sync-wechat-button" type="button">微信授权</button>
         <span id="syncRoomLabel" class="sync-room">单机本地</span>
         <button id="copyShareLinkButton" class="sync-copy-button" type="button">复制链接</button>
       </div>
@@ -79,13 +80,16 @@
     <main class="people-area">
       <div class="section-heading">
         <span class="section-pin"></span>
-        <h2>酒单记录</h2>
+        <div>
+          <h2>酒单记录</h2>
+          <p id="syncActivityLabel" class="sync-activity">最近操作：暂无</p>
+        </div>
       </div>
       <div id="peopleList" class="people-list"></div>
     </main>
 
     <footer class="bottom-safe">
-      <span>本地保存 · 即开即用</span>
+      <span id="footerModeLabel">本地保存 · 即开即用</span>
     </footer>
   </div>
 
@@ -145,6 +149,7 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+  <script src="./config.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

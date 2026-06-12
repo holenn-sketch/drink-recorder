@@ -1,0 +1,16 @@
+name = "drink-recorder-api"
+main = "src/index.js"
+compatibility_date = "2024-11-11"
+
+[vars]
+ALLOWED_ORIGINS = "https://holenn-sketch.github.io,http://localhost:8787,http://127.0.0.1:5500"
+WECHAT_MODE = "mp"
+WECHAT_APP_ID = "replace-with-your-wechat-app-id"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "DrinkRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DrinkRoom"]
