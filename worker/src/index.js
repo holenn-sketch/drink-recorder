@@ -20,6 +20,15 @@ export default {
       return corsResponse(new Response(null, { status: 204 }), request, env);
     }
 
+    if (isWechatVerifyRequest(url, env)) {
+      return new Response(env.WECHAT_VERIFY_CONTENT, {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store'
+        }
+      });
+    }
+
     if (url.pathname === '/api/health') {
       return corsResponse(json({ ok: true, service: 'drink-recorder-api' }), request, env);
     }
@@ -30,6 +39,10 @@ export default {
 
     if (url.pathname === '/api/auth/wechat/callback') {
       return handleWechatCallback(request, env);
+    }
+
+    if (url.pathname === '/api/auth/miniprogram/login') {
+      return corsResponse(await handleMiniProgramLogin(request, env), request, env);
     }
 
     const roomMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/(state|operations|socket)$/);
@@ -267,6 +280,66 @@ async function fetchWechatProfile(code, mode, env) {
   };
 }
 
+async function handleMiniProgramLogin(request, env) {
+  if (request.method !== 'POST') {
+    return json({ error: 'method_not_allowed' }, 405);
+  }
+
+  let payload;
+  try {
+    payload = await request.json();
+  } catch (error) {
+    return json({ error: 'invalid_json' }, 400);
+  }
+
+  const code = sanitizeText(payload.code || '', 128);
+  const appId = env.WECHAT_MINI_APP_ID || env.WECHAT_APP_ID;
+  const appSecret = env.WECHAT_MINI_APP_SECRET || env.WECHAT_APP_SECRET;
+  const tokenSecret = env.IDENTITY_TOKEN_SECRET || env.STATE_SECRET;
+  if (!code || !appId || !appSecret || !tokenSecret) {
+    return json({ error: 'miniprogram_login_not_configured' }, 500);
+  }
+
+  try {
+    const session = await fetchMiniProgramSession(code, appId, appSecret);
+    const identityToken = await signPayload({
+      provider: 'miniprogram',
+      sub: session.openid,
+      unionid: session.unionid || '',
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + IDENTITY_MAX_AGE_SECONDS
+    }, tokenSecret);
+
+    return json({
+      identityToken,
+      provider: 'miniprogram'
+    });
+  } catch (error) {
+    return json({ error: 'miniprogram_login_failed' }, 401);
+  }
+}
+
+async function fetchMiniProgramSession(code, appId, appSecret) {
+  const sessionUrl = new URL('https://api.weixin.qq.com/sns/jscode2session');
+  sessionUrl.searchParams.set('appid', appId);
+  sessionUrl.searchParams.set('secret', appSecret);
+  sessionUrl.searchParams.set('js_code', code);
+  sessionUrl.searchParams.set('grant_type', 'authorization_code');
+
+  const response = await fetch(sessionUrl.toString(), {
+    headers: { Accept: 'application/json' }
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.errcode || !payload.openid) {
+    throw new Error('jscode2session_failed');
+  }
+
+  return {
+    openid: sanitizeText(payload.openid, 96),
+    unionid: sanitizeText(payload.unionid || '', 96)
+  };
+}
+
 async function sanitizeOperation(input, identityToken, env) {
   if (!input || typeof input !== 'object') {
     return null;
@@ -277,8 +350,9 @@ async function sanitizeOperation(input, identityToken, env) {
     return null;
   }
 
-  const verifiedActor = await actorFromIdentityToken(identityToken, env);
-  const actor = verifiedActor || sanitizeActor(input.actor);
+  const fallbackActor = sanitizeActor(input.actor);
+  const verifiedActor = await actorFromIdentityToken(identityToken, env, fallbackActor);
+  const actor = verifiedActor || fallbackActor;
   const operation = {
     id: sanitizeId(input.id || randomId('op')),
     type,
@@ -321,16 +395,30 @@ async function sanitizeOperation(input, identityToken, env) {
   return operation;
 }
 
-async function actorFromIdentityToken(identityToken, env) {
+async function actorFromIdentityToken(identityToken, env, fallbackActor) {
   if (!identityToken) {
     return null;
   }
 
   try {
     const payload = await verifySignedPayload(identityToken, env.IDENTITY_TOKEN_SECRET || env.STATE_SECRET, IDENTITY_MAX_AGE_SECONDS);
-    if (!payload || payload.provider !== 'wechat' || !payload.displayName) {
+    if (!payload || !payload.provider) {
       return null;
     }
+
+    if (payload.provider === 'miniprogram') {
+      return {
+        clientId: fallbackActor ? fallbackActor.clientId : '',
+        name: sanitizeText((fallbackActor && fallbackActor.name) || '微信用户', MAX_NAME_LENGTH),
+        avatarUrl: sanitizeUrl((fallbackActor && fallbackActor.avatarUrl) || ''),
+        identityProvider: 'miniprogram'
+      };
+    }
+
+    if (payload.provider !== 'wechat' || !payload.displayName) {
+      return null;
+    }
+
     return {
       clientId: '',
       name: sanitizeText(payload.displayName, MAX_NAME_LENGTH),
@@ -537,6 +625,12 @@ function isAllowedOrigin(request, env) {
 function isOriginAllowed(origin, env) {
   const allowed = String(env.ALLOWED_ORIGINS || '').split(',').map((item) => item.trim()).filter(Boolean);
   return allowed.includes('*') || allowed.includes(origin);
+}
+
+function isWechatVerifyRequest(url, env) {
+  const filename = String(env.WECHAT_VERIFY_FILENAME || '').trim();
+  const content = String(env.WECHAT_VERIFY_CONTENT || '').trim();
+  return Boolean(filename && content && url.pathname === `/${filename}`);
 }
 
 function corsResponse(response, request, env) {

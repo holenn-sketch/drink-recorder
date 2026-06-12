@@ -1,0 +1,180 @@
+<view class="page-shell">
+  <view class="wood-grain" aria-hidden="true"></view>
+
+  <view class="tavern-board">
+    <view class="board-shine"></view>
+    <view class="title-copy">
+      <text class="eyebrow">Social Drink Log</text>
+      <text class="title">饮酒记录器</text>
+      <text class="subtitle">记录每个人应该喝多少</text>
+    </view>
+
+    <view class="sync-panel">
+      <view class="sync-status {{sync.status}}">
+        <text class="sync-dot"></text>
+        <text>{{syncStatusText}}</text>
+      </view>
+      <button class="mini-chip" bindtap="loginWithWechat">{{profile.identityToken ? '已登录' : '微信登录'}}</button>
+      <button class="mini-chip" open-type="share">分享房间</button>
+    </view>
+  </view>
+
+  <view class="profile-card">
+    <button class="avatar-button" open-type="chooseAvatar" bindchooseavatar="chooseAvatar">
+      <image wx:if="{{profile.avatarUrl}}" class="avatar-image" src="{{profile.avatarUrl}}" mode="aspectFill"></image>
+      <text wx:else>{{profileInitial}}</text>
+    </button>
+    <view class="profile-main">
+      <text class="profile-label">当前身份</text>
+      <input class="nickname-input" type="nickname" value="{{profile.name}}" maxlength="18" placeholder="填写微信昵称" bindinput="handleNicknameInput" bindblur="saveProfileName" />
+    </view>
+    <button class="profile-save" bindtap="saveProfileName">保存</button>
+  </view>
+
+  <view class="stats-board">
+    <view class="stat-tile">
+      <text class="stat-label">总人数</text>
+      <text class="stat-number">{{stats.totalPeople}}</text>
+      <text class="stat-unit">位</text>
+    </view>
+    <view class="stat-tile amber">
+      <text class="stat-label">总杯数</text>
+      <text class="stat-number">{{stats.totalCups}}</text>
+      <text class="stat-unit">杯</text>
+    </view>
+    <view class="stat-tile">
+      <text class="stat-label">最高</text>
+      <text class="stat-name">{{stats.topName}}</text>
+      <text class="stat-unit">{{stats.topCups}}</text>
+    </view>
+  </view>
+
+  <view class="control-panel">
+    <button class="press-button add" bindtap="openAddPersonDialog">
+      <text class="button-symbol">+</text>
+      <text>添加人员</text>
+    </button>
+    <button class="press-button brass" bindtap="openQuickPanel">
+      <text class="button-symbol">✦</text>
+      <text>编辑快捷酒量</text>
+    </button>
+    <button class="press-button leather" bindtap="resetAllPeople">
+      <text class="button-symbol">↺</text>
+      <text>全部清零</text>
+    </button>
+    <button class="press-button danger" bindtap="clearAllPeople">
+      <text class="button-symbol">×</text>
+      <text>清空全部</text>
+    </button>
+    <button class="press-button parchment sort-button" bindtap="toggleSortMode">
+      <text class="button-symbol">⇅</text>
+      <text>{{sortText}}</text>
+    </button>
+  </view>
+
+  <view class="section-heading">
+    <text class="section-pin"></text>
+    <view>
+      <text class="section-title">酒单记录</text>
+      <text class="activity">{{sync.lastActivity ? '最近操作：' + sync.lastActivity : '最近操作：暂无'}}</text>
+    </view>
+  </view>
+
+  <view wx:if="{{!people.length}}" class="empty-card">
+    <view class="empty-glass"></view>
+    <text class="empty-title">还没有参与者</text>
+    <text class="empty-desc">点击添加人员开始记录</text>
+    <button class="press-button add empty-action" bindtap="openAddPersonDialog">
+      <text class="button-symbol">+</text>
+      <text>添加人员</text>
+    </button>
+  </view>
+
+  <view wx:else class="people-list">
+    <view wx:for="{{displayPeople}}" wx:key="id" class="person-card">
+      <view class="card-top">
+        <view class="name-row">
+          <text class="avatar-badge">{{item.initial}}</text>
+          <view class="name-copy">
+            <text class="person-name">{{item.name}}</text>
+            <text class="person-time">{{item.createdText}}</text>
+          </view>
+        </view>
+        <view class="amount-plaque">
+          <text class="amount-number">{{item.cups}}</text>
+          <text class="amount-unit">杯</text>
+        </view>
+      </view>
+
+      <view class="amount-section">
+        <text class="amount-title">增加</text>
+        <view class="quick-grid">
+          <button wx:for="{{quickAmounts}}" wx:for-item="amount" wx:key="id" class="press-button amount add" data-person-id="{{item.id}}" data-quarters="{{amount.quarters}}" data-delta="{{amount.quarters}}" bindtap="changePersonAmount">+{{amount.label}} 杯</button>
+        </view>
+      </view>
+
+      <view class="amount-section">
+        <text class="amount-title">减少</text>
+        <view class="quick-grid">
+          <button wx:for="{{quickAmounts}}" wx:for-item="amount" wx:key="id" class="press-button amount minus" data-person-id="{{item.id}}" data-quarters="{{amount.quarters}}" data-delta="{{0 - amount.quarters}}" bindtap="changePersonAmount">-{{amount.label}} 杯</button>
+        </view>
+      </view>
+
+      <view class="card-actions">
+        <button class="press-button leather small" data-person-id="{{item.id}}" bindtap="resetPerson">清零</button>
+        <button class="press-button danger small" data-person-id="{{item.id}}" bindtap="deletePerson">删除</button>
+      </view>
+    </view>
+  </view>
+
+  <view class="bottom-safe">本地保存 · 在线同步 · 微信登录</view>
+</view>
+
+<view wx:if="{{showQuickPanel}}" class="sheet-mask" bindtap="closeQuickPanel">
+  <view class="quick-sheet" catchtap="noop">
+    <view class="sheet-handle"></view>
+    <view class="sheet-title-row">
+      <view>
+        <text class="drawer-eyebrow">Measure Presets</text>
+        <text class="drawer-title">快捷酒量</text>
+      </view>
+      <button class="round-close" bindtap="closeQuickPanel">×</button>
+    </view>
+
+    <view class="quick-input-tray">
+      <text class="input-label">新增杯数</text>
+      <view class="quick-input-row">
+        <input class="text-input" value="{{quickInputValue}}" type="digit" placeholder="0.25 / 0.5 / 1.5" bindinput="handleQuickInput" />
+        <button class="press-button add compact" bindtap="addQuickAmountFromInput">新增</button>
+      </view>
+    </view>
+
+    <view class="quick-list">
+      <view wx:for="{{quickAmounts}}" wx:key="id" class="quick-item">
+        <view class="quick-value">
+          <text>{{item.label}} 杯</text>
+          <text class="quick-small">{{item.quarters}} quarters</text>
+        </view>
+        <button class="press-button brass mini" data-quick-id="{{item.id}}" bindtap="editQuickAmount">编辑</button>
+        <button class="press-button danger mini" data-quick-id="{{item.id}}" bindtap="deleteQuickAmount">删除</button>
+      </view>
+    </view>
+
+    <button class="press-button leather restore" bindtap="restoreDefaultQuickAmounts">恢复默认</button>
+  </view>
+</view>
+
+<view wx:if="{{inputDialog.visible}}" class="modal-mask">
+  <view class="paper-modal">
+    <view class="modal-ridge"></view>
+    <text class="modal-title">{{inputDialog.title}}</text>
+    <text class="modal-subtitle">{{inputDialog.subtitle}}</text>
+    <text class="input-label">{{inputDialog.label}}</text>
+    <input class="text-input" value="{{inputDialog.value}}" placeholder="{{inputDialog.placeholder}}" focus="{{true}}" bindinput="handleDialogInput" />
+    <text class="input-error">{{inputDialog.error}}</text>
+    <view class="modal-actions">
+      <button class="press-button leather" bindtap="closeInputDialog">取消</button>
+      <button class="press-button add" bindtap="submitInputDialog">{{inputDialog.confirmText}}</button>
+    </view>
+  </view>
+</view>

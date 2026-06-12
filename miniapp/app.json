@@ -1,0 +1,14 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "饮酒记录器",
+    "navigationBarBackgroundColor": "#7a4b2a",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#ead8b8",
+    "backgroundTextStyle": "dark"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}
